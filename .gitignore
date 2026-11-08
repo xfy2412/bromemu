@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+*.log
+
+# 大文件：镜像按需自备，或只保留说明
+# sources/*/brom.bin
+# sources/*/brom.elf
+# sources/*/decompiled.c

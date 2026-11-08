@@ -27,7 +27,7 @@ class BromMachine:
         for r in chip.region_list():
             mu.mem_map(r.base, r.size)
         # 兜底区间：MTK BROM 里会出现别名的低地址区，未映射会打断流程
-        for base, size, _name in getattr(model, "EXTRA_REGIONS", []):
+        for base, size, _name in model.chip.extra_regions:
             try:
                 mu.mem_map(base, size)
             except Exception:
@@ -38,8 +38,25 @@ class BromMachine:
         # 让外设模型能只读访问内存（判断回调指针是否已安装）
         model.mem_read = lambda a, n: mu.mem_read(a, n)
 
+        # 对 ROM 的非法写尝试（诊断用：真机上 ROM 只读，这些写本该失败）
+        self.rom_write_attempts = []
+
+        # ★★★ ROM 写保护（opt-in，默认关闭）
+        #     Unicorn 的 UC_HOOK_MEM_WRITE 只是"通知"，在回调里 return 并不能阻止写入；
+        #     要真正拦截必须 mem_protect 设成 UC_PROT_READ|EXEC，
+        #     代价是写操作会抛 UC_ERR_WRITE_PROT，得靠 run() 里的容错循环跳过。
+        #     ⚠️ 打开它会让执行流变化（写被忽略 vs 写生效），排查别的问题时先别开。
+        #     启用方式：环境变量 BROMEMU_PROTECT_ROM=1
+        rom_end = chip.rom_base + chip.rom_size
+        self._rom_range = (chip.rom_base, rom_end)
+        import os
+        if os.environ.get("BROMEMU_PROTECT_ROM") == "1":
+            mu.mem_protect(chip.rom_base, chip.rom_size,
+                           UC_PROT_READ | UC_PROT_EXEC)
+
         mu.hook_add(UC_HOOK_MEM_READ, self._on_read)
         mu.hook_add(UC_HOOK_MEM_WRITE, self._on_write)
+        mu.hook_add(UC_HOOK_MEM_WRITE_UNMAPPED, self._on_write_unmapped)
         mu.hook_add(UC_HOOK_CODE, self._on_code)
 
     # ---------------- CP15 等待循环的绕过 ----------------
@@ -80,7 +97,8 @@ class BromMachine:
             return
 
         # 设备寄存器（可能落在普通内存区间里）
-        if address in self.model.DEVICE_REGS:
+        _lo, _hi = self.chip.ready_window
+        if address in self.chip.device_regs or (_lo <= address < _hi):
             v = self.model.read(address, size)
             mu.mem_write(address, v.to_bytes(4, "little")[:size])
             return
@@ -90,8 +108,30 @@ class BromMachine:
             v = self.model.read(address, size)
             mu.mem_write(address, v.to_bytes(4, "little")[:size])
 
+    def _on_write_unmapped(self, mu, access, address, size, value, ud):
+        """接住对 ROM 的写（ROM 已 mem_protect 为只读）。
+        真机上掩膜 ROM 写无效，这里直接忽略并继续。"""
+        lo, hi = self._rom_range
+        if lo <= address < hi:
+            self.rom_write_attempts.append((address, size, value,
+                                            mu.reg_read(UC_ARM_REG_PC)))
+            return False          # False = 不跳过指令？ Unicorn 里返回 True 表示已处理
+        return None
+
     def _on_write(self, mu, access, address, size, value, ud):
-        if address >= 0x10000000:
+        # ★ ROM 是只读的：真机上对 0x00000~0x20000 的写要么被忽略、要么 fault。
+        #   不拦住的话，BROM 会把自己的数据表写到代码区，
+        #   把跳转指令（比如 0xE88 的 `b 0xC9C`）覆盖成指针，
+        #   随后执行流就跳进字符串里 —— 这正是之前那次 PC=0xE9C 崩溃的原因。
+        if address < self.chip.rom_base + self.chip.rom_size:
+            self.rom_write_attempts.append((address, size, value,
+                                            mu.reg_read(UC_ARM_REG_PC)))
+            return
+
+        if address in self.chip.device_regs or address >= 0x10000000:
+            self.model.write(address, size, value)
+        else:
+            # 落在 SRAM 里的设备寄存器 / 普通内存：交给模型
             self.model.write(address, size, value)
 
     def _feed_rx(self):
@@ -115,12 +155,49 @@ class BromMachine:
 
     # ---------------- 执行 ----------------
     def run(self, max_ins: int = 8_000_000):
-        try:
-            self.mu.emu_start(self.chip.entry, 0, count=max_ins)
-            return "指令数用尽"
-        except UcError as e:
+        """执行，遇到"写只读 ROM"的 fault 时跳过该指令继续。
+
+        真机上 BROM 是掩膜 ROM，对它的写只会静默无效；Unicorn 则会直接
+        抛 UC_ERR_WRITE_PROT 停住。这里模拟真机行为：记一笔，跳过，继续跑。
+        """
+        c = self.chip
+        done = 0
+        first = True
+        while done < max_ins:
             pc = self.mu.reg_read(UC_ARM_REG_PC)
-            return "停在 PC=0x%08X : %s" % (pc, e)
+            if first:
+                # 第一次调用：从芯片入口开始（与 debugger 的行为一致）
+                pc = c.entry
+                self.mu.reg_write(UC_ARM_REG_PC, pc)
+                first = False
+            cpsr = self.mu.reg_read(UC_ARM_REG_CPSR)
+            start = (pc | 1) if (cpsr & 0x20) else (pc & ~1)
+            try:
+                self.mu.emu_start(start, 0, count=max_ins - done)
+                return "指令数用尽"
+            except UcError as e:
+                if e.errno == UC_ERR_WRITE_PROT:
+                    # 记录并跳过这条写指令
+                    try:
+                        self.rom_write_attempts.append(
+                            (0, 0, 0, pc))
+                    except Exception:
+                        pass
+                    # 估算指令长度：Thumb 多为 2/4，ARM 固定 4
+                    step = 4 if not (cpsr & 0x20) else self._thumb_len(pc)
+                    self.mu.reg_write(UC_ARM_REG_PC, pc + step)
+                    continue
+                return "停在 PC=0x%08X : %s" % (pc, e)
+        return "指令数用尽"
+
+    def _thumb_len(self, pc: int) -> int:
+        """粗判 Thumb 指令长度：看高 5 位是否是 11101/11110/11111"""
+        try:
+            hw = int.from_bytes(self.mu.mem_read(pc, 2), "little")
+        except Exception:
+            return 2
+        top = hw >> 11
+        return 4 if top in (0b11101, 0b11110, 0b11111) else 2
 
     def state(self) -> str:
         mu = self.mu
@@ -131,6 +208,12 @@ class BromMachine:
                    "Thumb" if cpsr & 0x20 else "ARM", cpsr & 0x1F,
                    mu.reg_read(UC_ARM_REG_SP), mu.reg_read(UC_ARM_REG_LR),
                    mu.reg_read(UC_ARM_REG_R0)))
+
+
+
+
+
+
 
 
 

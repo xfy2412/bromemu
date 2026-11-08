@@ -38,7 +38,9 @@
 | 自由运行 timer | ✅ |
 | eFuse 只读区 | ✅ |
 | USB 端点 FIFO（TX） | 🟡 最小建模 |
-| USB 事件寄存器 | ⏸ 未建模 |
+| USB 事件寄存器 | ✅ 一律返回 0（不触发未安装的回调表） |
+| 命令循环 `sub_F830` | ✅ 可直达（跳过前置探测链） |
+| SEND_AUTH `0xE8` | ✅ 分发到 `sub_68D4`（验签函数已调用） |
 | ARM64 BROM | ⏸ 未支持 |
 | MMU / cache | ⏸ 不建模（Unicorn 忽略 `mcr p15`） |
 
@@ -271,6 +273,11 @@ sources/
   <chip>/          镜像 + 反编译 + 笔记
 docs/
   chips/<chip>.md  每个机型的逆向笔记
+tools/
+  xref.py          交叉引用工具（callers / disasm / findstr / dword）
+tests/
+  dbgtest.py       调试器冒烟测试
+  run_cmdloop.py   ★ 直接跳命令循环跑 SEND_AUTH
 ```
 
 **改动边界**：

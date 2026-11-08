@@ -26,12 +26,39 @@ class BromMachine:
         self.mu = mu
         for r in chip.region_list():
             mu.mem_map(r.base, r.size)
+        # 兜底区间：MTK BROM 里会出现别名的低地址区，未映射会打断流程
+        for base, size, _name in getattr(model, "EXTRA_REGIONS", []):
+            try:
+                mu.mem_map(base, size)
+            except Exception:
+                pass
         mu.mem_write(chip.rom_base, rom)
 
         mu.mem_write(chip.bootmode_addr, bytes([model.bootmode & 0xFF]))
+        # 让外设模型能只读访问内存（判断回调指针是否已安装）
+        model.mem_read = lambda a, n: mu.mem_read(a, n)
 
         mu.hook_add(UC_HOOK_MEM_READ, self._on_read)
         mu.hook_add(UC_HOOK_MEM_WRITE, self._on_write)
+        mu.hook_add(UC_HOOK_CODE, self._on_code)
+
+    # ---------------- CP15 等待循环的绕过 ----------------
+    # 某些 BROM 版本里有这种代码：
+    #     mcr p15, 0, r1, c15, c3, #5     写 cache size selection
+    #     mrc p15, 0, r1, c15, c3, #7     读回
+    #     cmp r2, r0 ; bne 读回处          读回不匹配就死等
+    # Unicorn 不实现 CP15，读回恒为 0 ⇒ 无限循环。
+    # 这里在 cmp 之前把"读回值"对齐到"期望值"，让循环立刻结束。
+    CP15_WAIT_PATCHES = {
+        0x00117E0: (0x117D8, 0),   # MT6853: cmp r2, r0 之前，令 r2 := r0
+    }
+
+    def _on_code(self, mu, address, size, ud):
+        patch = self.CP15_WAIT_PATCHES.get(address)
+        if patch is None:
+            return
+        # r2 ← r0（把"读回值"对齐到"期望值"）
+        mu.reg_write(UC_ARM_REG_R2, mu.reg_read(UC_ARM_REG_R0))
 
     # ---------------- 钩子 ----------------
     def _on_read(self, mu, access, address, size, value, ud):
@@ -50,6 +77,12 @@ class BromMachine:
         # RX 长度：顺便尝试从传输层取数据
         if c.rx_len_addr <= address < c.rx_len_addr + 4:
             self._feed_rx()
+            return
+
+        # 设备寄存器（可能落在普通内存区间里）
+        if address in self.model.DEVICE_REGS:
+            v = self.model.read(address, size)
+            mu.mem_write(address, v.to_bytes(4, "little")[:size])
             return
 
         # MMIO
@@ -98,4 +131,7 @@ class BromMachine:
                    "Thumb" if cpsr & 0x20 else "ARM", cpsr & 0x1F,
                    mu.reg_read(UC_ARM_REG_SP), mu.reg_read(UC_ARM_REG_LR),
                    mu.reg_read(UC_ARM_REG_R0)))
+
+
+
 

@@ -1,0 +1,35 @@
+{
+    // 调试 bromemu 模拟器（Python）
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "bromemu: mt6853 跑到卡住",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "emu.run",
+            "args": ["--chip", "mt6853", "--max-ins", "3000000"],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "bromemu: 调试器冒烟测试",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/tests/dbgtest.py",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "bromemu: socket 模式（等 mtkclient 连）",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "emu.run",
+            "args": ["--chip", "mt6853", "--transport", "socket", "--port", "28734"],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ]
+}

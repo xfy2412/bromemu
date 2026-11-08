@@ -1,3 +1,5 @@
+#include "ida_compat.h"
+
 // MT6853 BROM full decompile
 
 // ==================== sub_4 @0x4 size=4 ====================
@@ -22185,5 +22187,6 @@ int sub_1220C()
 {
   return 0;
 }
+
 
 

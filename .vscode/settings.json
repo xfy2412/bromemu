@@ -1,0 +1,48 @@
+{
+    // ------------------------------------------------------------------
+    // bromemu 的编辑器配置
+    //
+    // 为什么关掉 C/C++ 的错误波浪线：
+    //   sources/mt6853/decompiled*.c 是 IDA Hex-Rays 的输出，
+    //   它不是"能编译的 C"，而是一份【带 C 语法的反汇编注释】。
+    //   例：
+    //       MEMORY[0x102884] = 0;     IDA 的"绝对地址访问"伪语法
+    //       JUMPOUT(0x50E0);           IDA 的"跳转到未知地址"
+    //       __spoils<R2,R3,R12>       IDA 的"破坏寄存器"标注
+    //       nullsub_1(0x1234)         既是定义又是调用，参数对不上
+    //   ida_compat.h 已经把能兼容的都兼容了（类型/宏/stub），
+    //   但 MEMORY[] 的两种语义在 C 里无法同时表达，所以必然残留几百条。
+    //
+    //   ⇒ 保留语法高亮 / 跳转 / 补全，只是不画红波浪线。
+    //   ⇒ 真要检查语法，用 gcc：
+    //         gcc -fsyntax-only -std=gnu17 sources/mt6853/decompiled_named.c
+    //
+    // 如果你的机器上编译器不在这里，改 ../.vscode 或用户设置里的
+    // C_Cpp.default.compilerPath 即可，本文件不影响它。
+    // ------------------------------------------------------------------
+    "C_Cpp.errorSquiggles": "disabled",
+
+    // IDA 的输出用的是 4 空格缩进
+    "editor.tabSize": 4,
+    "editor.insertSpaces": true,
+
+    // 这两个文件很大（~500 KB），关掉一些开销大的特性
+    "editor.minimap.enabled": false,
+    "editor.folding": true,
+
+    // Python 代码按 4 空格
+    "[python]": {
+        "editor.tabSize": 4,
+        "editor.insertSpaces": true
+    },
+
+    // 反编译文件按 C 处理（保证高亮和跳转）
+    "files.associations": {
+        "*.h": "c",
+        "decompiled*.c": "c"
+    },
+
+    // 别在大文件上跑太多装饰
+    "editor.occurrencesHighlight": "off",
+    "editor.selectionHighlight": false
+}

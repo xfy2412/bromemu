@@ -13,6 +13,7 @@
 - [状态](#状态)
 - [快速开始](#快速开始)
 - [命令行](#命令行)
+- [调试](#调试)
 - [传输后端](#传输后端)
 - [支持的芯片](#支持的芯片)
 - [架构](#架构)
@@ -94,6 +95,115 @@ python -m emu.run [选项]
 
 ---
 
+## 调试
+
+模拟器自带一个调试器（`emu/debug.py`），能力对标 gdb 的常用部分，
+但更贴合"观察固件行为"这个场景。
+
+### 快速上手
+
+```python
+import sys
+from pathlib import Path
+sys.path.insert(0, ".")
+
+from emu.chips import get
+from emu.brom import BromModel
+from emu.machine import BromMachine
+from emu.debug import Debugger
+
+chip  = get("mt6853")                       # 换成你的芯片
+rom   = open(chip.rom_path(), "rb").read()
+model = BromModel(chip)
+m     = BromMachine(rom, chip, model)
+dbg   = Debugger(m)
+
+dbg.bp(0xE84C)                              # 地址断点
+dbg.bp(0xE7D48, cond=lambda mu: mu.reg_read(0) == 1)   # 条件断点
+dbg.watch(0x00102884, "w")                  # 内存写断点
+
+print(dbg.run(3_000_000))                   # 跑到命中或指令数用尽
+print(dbg.state())                          # 寄存器 + 停止原因 + 反汇编
+```
+
+### 能力
+
+| 方法 | 说明 |
+|---|---|
+| `dbg.bp(addr, cond=None, text="")` | 地址断点；`cond` 是 `callable(mu) -> bool` |
+| `dbg.watch(addr, kind="w", size=4, cond=None)` | 内存断点，`kind` 可为 `"r"` / `"w"` / `"rw"` |
+| `dbg.run(max_ins)` | 继续跑，返回停止原因 |
+| `dbg.step(n=1)` | 单步 n 条 |
+| `dbg.step_over()` | 步过：`bl`/`blx` 时跑到返回地址 |
+| `dbg.regs()` | 所有寄存器 + CPSR 标志位 |
+| `dbg.disasm(n=8, pc=None)` | 反汇编上下文，自动判断 ARM / Thumb |
+| `dbg.mem(addr, n=64)` | 内存查看（hex + ASCII + u32） |
+| `dbg.write_mem(addr, data)` | 写内存 |
+| `dbg.stack(n=16)` | 栈内容 |
+| `dbg.last_trace(n=16)` | 最近执行过的地址 |
+| `dbg.clear()` | 清空所有断点 |
+
+### 典型场景
+
+**① 某个地址什么时候被改了**
+
+```python
+dbg.watch(0x00102884, "w")
+print(dbg.run(3_000_000))
+# 输出：内存写 0x102884 = 0x0（PC=0x11D98）
+#       ⇒ 就是 0x11D98 那条指令改的
+```
+
+**② 某段代码为什么进不去**
+
+```python
+dbg.bp(0xE244)          # 函数入口
+dbg.run(3_000_000)
+print(dbg.state())      # 看当时的寄存器和参数
+```
+
+**③ 卡在死循环里，想知道在等什么**
+
+```python
+dbg.bp(0x5516)          # 循环体
+dbg.run(500_000)
+print(dbg.mem(0x11201080, 16))   # 看被轮询的寄存器
+```
+
+**④ 从某个中间点开始单步**
+
+```python
+dbg.run(2_000_000)      # 先跑到大概位置
+dbg.clear()
+for i in range(10):
+    print(dbg.disasm(1))
+    dbg.step(1)
+```
+
+### 调试钩子对性能的影响
+
+`Debugger` 会挂两个钩子（`UC_HOOK_CODE` + `UC_HOOK_MEM_WRITE`），
+比不挂慢约 **2~3 倍**。所以：
+
+- **跑长流程**用 `emu.run`（无钩子）
+- **定位问题**用 `Debugger`
+
+### 扩展自己的调试钩子
+
+直接挂 Unicorn 钩子也很方便：
+
+```python
+from unicorn import UC_HOOK_MEM_READ
+
+def on_read(mu, access, address, size, value, ud):
+    if address == 0x11C10090:
+        print("读了 eFuse 哈希！PC=0x%X" % mu.reg_read(UC_ARM_REG_PC))
+
+m.mu.hook_add(UC_HOOK_MEM_READ, on_read)
+m.run(3_000_000)
+```
+
+---
 ## 传输后端
 
 模拟器对外**只暴露一条字节流**，后端可替换。这是它能对接真实工具的关键。
@@ -155,6 +265,7 @@ emu/
   brom.py          外设语义（UART / timer / USB FIFO / eFuse）—— 无芯片常量
   machine.py       Unicorn 胶水（内存映射、钩子、执行）—— 无芯片常量
   transport.py     对外字节流
+  debug.py         ★ 调试器（断点 / 单步 / 观察）
   run.py           命令行入口
 sources/
   <chip>/          镜像 + 反编译 + 笔记
@@ -170,6 +281,7 @@ docs/
 | 加一种外设 | `emu/brom.py` |
 | 换 CPU 后端（Unicorn → 别的） | `emu/machine.py` |
 | 换对外接口（socket → USB/IP） | `emu/transport.py` |
+| 加调试能力 | `emu/debug.py` |
 
 ---
 

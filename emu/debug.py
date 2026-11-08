@@ -136,11 +136,18 @@ class Debugger:
 
     # ---------------- 执行 ----------------
     def _start_pc(self):
-        """首次从芯片入口开始，之后从当前 PC 继续"""
+        """首次从芯片入口开始，之后从当前 PC 继续
+
+        ⚠️ Unicorn 用 PC 的最低位选 ARM/Thumb：
+           bit0=1 ⇒ Thumb，bit0=0 ⇒ ARM。
+           继续执行时必须把当前 CPSR 的 T 位带上，否则会把 Thumb 代码当 ARM 解。
+        """
         if not self.started:
             self.started = True
             return self.chip.entry
-        return self.mu.reg_read(UC_ARM_REG_PC)
+        pc = self.mu.reg_read(UC_ARM_REG_PC)
+        cpsr = self.mu.reg_read(UC_ARM_REG_CPSR)
+        return (pc | 1) if (cpsr & 0x20) else (pc & ~1)
 
     def run(self, max_ins=1_000_000):
         """继续跑，直到命中断点或指令数用尽"""
@@ -156,13 +163,22 @@ class Debugger:
         return self.stop_reason
 
     def step(self, n=1):
-        """单步 n 条"""
-        for _ in range(n):
-            pc = self._start_pc()
-            try:
-                self.mu.emu_start(pc, 0, count=1)
-            except Exception as e:
-                return "异常：%s" % e
+        """单步 n 条
+
+        ⚠️ 单步时必须临时屏蔽断点：否则 PC 停在断点上时，
+           每走一步都会被同一个断点立刻 emu_stop 掐断，永远前进不了。
+        """
+        saved = self.bps
+        self.bps = []
+        try:
+            for _ in range(n):
+                pc = self._start_pc()
+                try:
+                    self.mu.emu_start(pc, 0, count=1)
+                except Exception as e:
+                    return "异常：%s" % e
+        finally:
+            self.bps = saved
         return "单步 %d 条完成" % n
 
     def step_over(self):

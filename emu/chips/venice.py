@@ -55,6 +55,24 @@ class Venice(ChipProfile):
         mu.reg_write(UC_ARM_REG_CPSR, mu.reg_read(UC_ARM_REG_CPSR) | 0x20)
         return entry | 1
 
+    #: BootROM 没有日志，这里给关键地址配"旁白"
+    log_points = {
+        0x000048: "BootROM 复位入口  sp=0x{sp:X}",
+        0x000420: "取安全类型 / 策略  r0=0x{r0:X}",
+        0x000450: "装载后处理（验签分发）  r0=0x{r0:X} len=0x{r1:X}",
+        0x0005AC: "读取 flash（按 0x4020A3A0.bit15 选路）  r0=0x{r0:X}",
+        0x0006AC: "设备初始化（0x4A8）  r0=0x{r0:X}",
+        0x000726: "跳转到镜像 entry  0x{r3:X}",
+        0x003E68: "解析容器链  base=0x{r0:X}",
+        0x004484: "解析容器块（magic/版本/type）  blk=0x{r0:X}",
+        0x0040E0: "策略分发（按安全类型）  r0=0x{r0:X} limit=0x{r1:X} r2=0x{r2:X}",
+        0x003F40: "分段验签  r0=0x{r0:X}",
+        0x004F58: "SEB 就绪 / 身份检查",
+    }
+
+    #: 调试字符设备：往 0x90000000 写一个字节 = 打印到终端
+    debug_putc_addr = 0x90000000
+
     # ---------- 动态寄存器模型（等待位/响应寄存器） ----------
     def __init__(self):
         # 0x4023E004：0x3BC4 那段轮询"值有没有变"的响应寄存器

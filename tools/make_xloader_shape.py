@@ -35,6 +35,31 @@ PAYLOAD_OFF = 0x1000
 PAYLOAD_SIZE = 0x6800       # 与 BootROM 里 xloader 的最小装载尺寸一致（0x6800）
 
 
+
+
+def thumb_print(msg: str, putc: int = 0x90000000) -> bytes:
+    """生成"把 msg 打到调试字符设备"的 Thumb 代码。
+
+    模拟器把写入 0x90000000 的字节直接输出到终端（见 Venice.debug_putc_addr）。
+    """
+    def mov_imm16(movt: bool, rd: int, imm: int) -> bytes:
+        i = (imm >> 11) & 1
+        imm4 = (imm >> 12) & 0xF
+        imm3 = (imm >> 8) & 7
+        imm8 = imm & 0xFF
+        hw1 = (0xF2C0 if movt else 0xF240) | (i << 10) | imm4
+        hw2 = (rd << 8) | (imm3 << 12) | imm8
+        return struct.pack("<HH", hw1, hw2)
+
+    code = bytearray()
+    code += mov_imm16(False, 2, putc & 0xFFFF)
+    code += mov_imm16(True, 2, (putc >> 16) & 0xFFFF)
+    for ch in msg:
+        code += struct.pack("<H", 0x2100 | (ord(ch) & 0xFF))   # movs r1,#imm8
+        code += struct.pack("<H", 0x7011)                       # strb r1,[r2]
+    code += struct.pack("<H", 0x4770)                           # bx lr
+    return bytes(code)
+
 def build_elf(payload_off: int) -> bytes:
     """造一个最小 AArch32 ELF：头 + 一小段 Thumb 代码。
 
@@ -43,7 +68,7 @@ def build_elf(payload_off: int) -> bytes:
     code_off = 0x34                     # ELF 头 0x34 字节
     load_base = 0x22000                 # BootROM 把镜像装到 0x22000
     elf_base = load_base + payload_off  # ELF 自身落在 0x23000
-    code = bytes.fromhex("0020 7047 feee")   # movs r0,#0; bx lr; 0xEEFE (留空)
+    code = thumb_print("XLOADER! from synthetic image\r\n")
     entry = elf_base + code_off
 
     ehdr = bytearray(0x34)

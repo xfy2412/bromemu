@@ -60,6 +60,11 @@ class ChipProfile:
         """
         return entry
 
+    #: 关键地址 → 旁白文案（仿真时打印；给没有日志的 BootROM "加日志"）
+    log_points: dict = {}
+    #: 调试字符输出地址：芯片往这里写一个字节，模拟器就打印到终端；None = 不支持
+    debug_putc_addr: Optional[int] = None
+
     def read_mmio(self, machine, address: int, size: int):
         """芯片专有的 MMIO 读模型。
 

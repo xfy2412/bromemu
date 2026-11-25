@@ -16,6 +16,10 @@ from .brom import BromModel
 from .chips.base import ChipProfile
 
 
+#: 旁白里可引用的寄存器（名字 → Unicorn 常量）
+_REGS = [("r%d" % i, globals()["UC_ARM_REG_R%d" % i]) for i in range(13)]
+_REGS += [("sp", UC_ARM_REG_SP), ("lr", UC_ARM_REG_LR), ("pc", UC_ARM_REG_PC)]
+
 class BromMachine:
     def __init__(self, rom: bytes, chip: ChipProfile, model: BromModel):
         self.chip = chip
@@ -58,6 +62,27 @@ class BromMachine:
         mu.hook_add(UC_HOOK_MEM_WRITE, self._on_write)
         mu.hook_add(UC_HOOK_MEM_WRITE_UNMAPPED, self._on_write_unmapped)
         mu.hook_add(UC_HOOK_CODE, self._on_code)
+
+        # 关键地址旁白：给没有日志的 BootROM 加"日志"
+        for addr, msg in (getattr(chip, "log_points", None) or {}).items():
+            mu.hook_add(UC_HOOK_CODE, self._make_log_hook(msg),
+                        begin=addr, end=addr + 1)
+
+    @staticmethod
+    def _make_log_hook(msg):
+        """把一条旁白变成 Unicorn 代码钩子。
+
+        文案里可以用 {r0}..{r12} / {sp} / {lr} / {pc} 引用当时的寄存器，
+        例如 "解析容器块 r0=0x{r0:X} type={r1}"。
+        """
+        def _hook(uc, address, size, user_data):
+            if "{" in msg:
+                vals = {name: uc.reg_read(reg) for name, reg in _REGS}
+                text = msg.format(**vals)
+            else:
+                text = msg
+            print("[rom] %s" % text, flush=True)
+        return _hook
 
     # ---------------- CP15 等待循环的绕过 ----------------
     # 某些 BROM 版本里有这种代码：
@@ -133,6 +158,13 @@ class BromMachine:
         return None
 
     def _on_write(self, mu, access, address, size, value, ud):
+        # 调试字符设备：芯片把字节写到这里就等于 printf
+        putc = getattr(self.chip, "debug_putc_addr", None)
+        if putc is not None and address == putc:
+            import sys
+            sys.stdout.write(chr(value & 0xFF))
+            sys.stdout.flush()
+            return
         # ★ ROM 是只读的：真机上对 0x00000~0x20000 的写要么被忽略、要么 fault。
         #   不拦住的话，BROM 会把自己的数据表写到代码区，
         #   把跳转指令（比如 0xE88 的 `b 0xC9C`）覆盖成指针，

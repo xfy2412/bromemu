@@ -211,6 +211,54 @@ m.mu.hook_add(UC_HOOK_MEM_READ, on_read)
 m.run(3_000_000)
 ```
 
+
+### 关键地址旁白（给"没有日志"的固件加日志）
+
+真实 BootROM 往往没有任何文本日志。模拟器可以在**指定地址**打旁白，
+文案里可以引用当时的寄存器：
+
+```python
+class MyChip(ChipProfile):
+    log_points = {
+        0x000048: "复位入口  sp=0x{sp:X}",
+        0x000450: "装载后处理  r0=0x{r0:X} limit=0x{r1:X}",
+        0x003E68: "解析容器链  base=0x{r0:X}",
+        0x000726: "跳转到镜像 entry  0x{r3:X}",
+    }
+```
+
+可用占位符：`{r0}`…`{r12}`、`{sp}`、`{lr}`、`{pc}`（Python 格式串，可写 `0x{r0:X}`）。
+命中的指令会打印成：
+
+```text
+[rom] 装载后处理  r0=0x22000 limit=0x4DC00
+```
+
+实现上每个地址装一个 `UC_HOOK_CODE`（范围 `addr..addr+1`），命中该指令才触发，
+不影响其它指令的执行速度。
+
+### 调试字符设备（让固件自己说话）
+
+profile 里设一个地址，芯片往它写字节就等于 `printf`：
+
+```python
+class MyChip(ChipProfile):
+    debug_putc_addr = 0x90000000
+```
+
+固件侧：
+
+```asm
+movw r2, #0x0000        ; 0x90000000
+movt r2, #0x9000
+movs r1, #'O'           ; 每次打印一个字符
+strb r1, [r2]
+...
+```
+
+模拟器会把字节直接写到 stdout（`machine._on_write` 里处理）。
+用它可以让**自造的测试镜像**汇报"我执行到哪了""我的头部长什么样"。
+
 ---
 ## 传输后端
 

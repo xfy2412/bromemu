@@ -54,6 +54,12 @@ def main():
     print("  0x10288C = 0x%08X" % int.from_bytes(m.mu.mem_read(0x10288C, 4), "little"))
     print("  0x102884 = 0x%02X" % int.from_bytes(m.mu.mem_read(0x102884, 1), "little"))
 
+    # USB TX 闸门：usb_tx_put_byte / usb_tx_flush 要求 0x1052AD == 3，
+    # 端点号在 0x102AA0。不设这两项，命令回显会被静默丢掉。
+    m.mu.mem_write(0x1052AD, b"\x03")
+    m.mu.mem_write(0x102AA0, b"\x00")
+    print("  0x1052AD = 3（USB TX 状态）  0x102AA0 = 0（EP）")
+
     # ★ 直接从命令循环入口开始
     m.mu.reg_write(UC_ARM_REG_PC, CMDLoop)
     m.mu.reg_write(UC_ARM_REG_SP, 0x00102700)
@@ -90,6 +96,11 @@ def main():
         print()
         print("=== 串口 ===")
         print(model.uart_text())
+
+    if model.tx_bytes:
+        print()
+        print("=== USB 发出 ===")
+        print(bytes(model.tx_bytes).hex(" "))
 
 
 if __name__ == "__main__":

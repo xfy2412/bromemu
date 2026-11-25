@@ -97,14 +97,22 @@ class BromMachine:
             return
 
         # 设备寄存器（可能落在普通内存区间里）
-        _lo, _hi = self.chip.ready_window
-        if address in self.chip.device_regs or (_lo <= address < _hi):
+        rw = self.chip.ready_window
+        if address in self.chip.device_regs or (rw and rw[0] <= address < rw[1]):
             v = self.model.read(address, size)
             mu.mem_write(address, v.to_bytes(4, "little")[:size])
             return
 
         # MMIO
         if address >= 0x10000000:
+            # USB 事件/状态寄存器：一律返回 0（不触发未安装的回调表）。
+            # 注意：这里【不要】顺手 _feed_rx()。sub_F81C 在命令循环开头会清
+            # 0x1054xx 一带的缓冲；如果在它清之前就把字节搬进 RX 缓冲，字节会被
+            # 清掉，而 transport 里那一块已经消费掉了 ⇒ 命令循环永远等不到数据。
+            # 数据只在 BROM 真正读 0x1054D8 时补（见上面的 rx_len 分支）。
+            if c.usb_base <= address < c.usb_base + 0x1000:
+                mu.mem_write(address, (0).to_bytes(4, "little")[:size])
+                return
             v = self.model.read(address, size)
             mu.mem_write(address, v.to_bytes(4, "little")[:size])
 
@@ -135,23 +143,34 @@ class BromMachine:
             self.model.write(address, size, value)
 
     def _feed_rx(self):
+        """把主机侧的一批字节搬进 BROM 的 RX 缓冲。
+
+        真机语义（sub_520E / sub_5B26）：
+            · RX 缓冲 = 0x1054DC，长度 ≤ usb_max_packet（MT6853 = 512）
+            · 0x1054D8 = 本批长度；BROM 用完最后 1 字节后清 0
+            · 0x1054DC + 0x200 = 0x1056DC 是 RC/key 结构（"RC_INIT"）
+              ⇒ 一次搬超过 512 B 会覆盖它和 0x105748 的验签钥缓冲
+        所以这里只在 rx_len == 0 时搬“一包”，剩下的留在 model._host_pending。
+        """
         c = self.chip
         mu = self.mu
         # 还有没读完的就先不管
         if int.from_bytes(mu.mem_read(c.rx_len_addr, 4), "little"):
             return
 
-        data = None
-        if self.model.tp is not None:
-            data = self.model.tp.poll_rx()
-        if not data:
-            data = self.model.take_rx()
-        if not data:
+        if not self.model.poll_host():
             return
+        pkt = self.model.take_rx_packet(c.usb_max_packet)
+        if not pkt:
+            return
+        # 双保险：模型层已经按 usb_max_packet 切过，这里再截一次
+        if len(pkt) > c.usb_max_packet:
+            pkt = pkt[:c.usb_max_packet]
 
-        mu.mem_write(c.rx_buf_addr, data)
-        mu.mem_write(c.rx_len_addr, len(data).to_bytes(4, "little"))
+        mu.mem_write(c.rx_buf_addr, pkt)
+        mu.mem_write(c.rx_len_addr, len(pkt).to_bytes(4, "little"))
         mu.mem_write(c.rx_idx_addr, b"\x00\x00\x00\x00")
+        self.model.log_rx_packet(pkt)
 
     # ---------------- 执行 ----------------
     def run(self, max_ins: int = 8_000_000):

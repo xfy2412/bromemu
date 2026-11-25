@@ -37,14 +37,20 @@
 | UART（数据 + 状态位） | ✅ |
 | 自由运行 timer | ✅ |
 | eFuse 只读区 | ✅ |
-| USB 端点 FIFO（TX） | 🟡 最小建模 |
+| RX 字节流状态机 | ✅ 512 B 分片 + 两层缓冲 + ZLP（`tests/stream_test.py`） |
+| USB 端点 FIFO（TX） | 🟡 最小建模（`0x1052AD=3` / `0x102AA0` 才发得出来） |
 | USB 事件寄存器 | ✅ 一律返回 0（不触发未安装的回调表） |
 | 命令循环 `sub_F830` | ✅ 可直达（跳过前置探测链） |
 | SEND_AUTH `0xE8` | ✅ 分发到 `sub_68D4`（验签函数已调用） |
+| SEND_AUTH `0xE2`（MT6993） | ⏸ 未建模；MT6993 的 `0xE2` 对应 MT6853 的 `sub_6BB6` 类，**不是** `sub_68D4`（见 `docs/chips/mt6853.md` 2026-11-08 注） |
 | ARM64 BROM | ⏸ 未支持 |
 | MMU / cache | ⏸ 不建模（Unicorn 忽略 `mcr p15`） |
 
 各芯片实际跑到哪，见 [`docs/chips/`](docs/chips/)。
+
+> ⚠️ **代际**：MT6853 的 BROM 很可能是 **v5 代授权**，MT6993 是 **v6 代**；本项目目前
+> 只有 MT6853 的 dump。它能提供的是**传输层 / 命令流 / 状态机 / 错误码形状**的参考，
+> **不是** MT6993 的具体地址、命令号与验签格式。详见 `docs/chips/mt6853.md` 顶部。
 
 ---
 
@@ -217,6 +223,10 @@ m.run(3_000_000)
 | `stdio` | stdin 敲十六进制，手工调试 |
 | `socket` | **给 mtkclient / bromd 之类的真程序连** |
 | `recording` | 包住任意后端，记录全部收发 |
+
+> **2026-11-08**：`BromModel` 现在按 `ChipProfile.usb_max_packet`（MT6853 = 512）切包。
+> `feed_host()` 收主机字节，`_feed_rx()` 每次只在 `0x1054D8 == 0` 时搬**一包**；大块输入
+> 剩下的留在待搬缓冲。socket 的每条长度前缀消息仍算一条 transfer，模型自己切。
 
 **socket 协议**（简单长度前缀）：
 

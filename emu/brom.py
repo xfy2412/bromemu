@@ -34,7 +34,14 @@ class BromModel:
         self.mmio_reads = {}
         self.mmio_writes = {}
         self.usb_injected = 0
-        self._rx_pending = b""
+
+        # ---- 主机 → 芯片：两层缓冲 ----
+        # _host_pending = 主机已给、还没搬进 RX 缓冲的字节流；
+        # RX 缓冲（machine 里的 rx_buf_addr）每次只装一个 <= usb_max_packet 的包，
+        # 与真机 sub_520E(ep, len, 0x1054DC) 的语义一致。
+        self._host_pending = bytearray()
+        self.rx_packets = []          # [(len, first16_hex)]，回放/对照用
+        self.rx_zlp = 0               # 收到的零长度包个数（只记录，不改 rx_len）
         # 由 machine 注入：只读访问芯片内存（判断回调指针是否已安装）
         self.mem_read = None
 
@@ -45,16 +52,63 @@ class BromModel:
         if self.verbose:
             print("[brom] " + s)
 
-    # ---------------- RX 注入 ----------------
-    def inject_rx(self, data: bytes):
-        self._rx_pending = bytes(data)
+    # ---------------- 主机 → 芯片（两层缓冲）----------------
+    def feed_host(self, data: bytes):
+        """主机侧来的一串字节（一个 USB transfer 或更多）。"""
+        if not data:
+            # 零长度包：真机上是一个 ZLP；它不改变 rx_len，只记一笔
+            self.rx_zlp += 1
+            self._log("主机 ZLP")
+            return
+        self._host_pending.extend(data)
         self.usb_injected += len(data)
-        self._log("注入 RX %d 字节：%s" % (len(data), data.hex(" ")))
+        self._log("主机 → 芯片 %d 字节（待搬 %d）"
+                  % (len(data), len(self._host_pending)))
 
-    def take_rx(self) -> bytes:
-        d = self._rx_pending
-        self._rx_pending = b""
-        return d
+    # 兼容旧 API
+    def inject_rx(self, data: bytes):
+        self.feed_host(bytes(data))
+
+    def poll_host(self) -> bool:
+        """待搬缓冲空了就问 transport 要下一段；返回是否有新数据。"""
+        if self._host_pending:
+            return True
+        if self.tp is None:
+            return False
+        # 最多吞 8 个 ZLP，避免 transport 异常时无限递归
+        for _ in range(8):
+            data = self.tp.poll_rx()
+            if data is None:
+                return False
+            if len(data) == 0:
+                self.feed_host(b"")
+                continue
+            self.feed_host(data)
+            return True
+        return False
+
+    def take_rx_packet(self, max_len: int) -> bytes:
+        """从待搬缓冲取一个 USB 包（<= max_len）。"""
+        if not self._host_pending:
+            return b""
+        n = min(max_len, len(self._host_pending))
+        pkt = bytes(self._host_pending[:n])
+        del self._host_pending[:n]
+        return pkt
+
+    def log_rx_packet(self, pkt: bytes):
+        self.rx_packets.append((len(pkt), pkt[:16].hex()))
+        self._log("搬入 RX 包 %d 字节：%s%s"
+                  % (len(pkt), pkt[:16].hex(" "),
+                     " …" if len(pkt) > 16 else ""))
+
+    def rx_pending_len(self) -> int:
+        return len(self._host_pending)
+
+    def reset_session(self):
+        """复位/换会话：丢掉主机侧未搬完的数据。"""
+        self._host_pending.clear()
+        self.rx_zlp = 0
 
     def _peek(self, addr, n=4):
         if self.mem_read is None:
@@ -128,7 +182,10 @@ class BromModel:
         # USB 端点 FIFO：base + 0x300 + 16*ep
         fifo0 = c.usb_base + c.usb_ep_fifo_off
         if fifo0 <= addr < fifo0 + 0x100:
-            b = bytes([value & 0xFF])
+            # sub_5212 会按 1/2/3/4 字节写 FIFO；必须按 size 全部取出来，
+            # 不能只取低字节（否则 0x7114 这类 2 字节写会丢掉 0x71）。
+            n = max(1, min(size, 4))
+            b = (value & ((1 << (8 * n)) - 1)).to_bytes(n, "little")
             self.tx_bytes.extend(b)
             if self.tp:
                 self.tp.tx(b)

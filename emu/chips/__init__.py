@@ -6,9 +6,11 @@ from __future__ import annotations
 
 from .base import ChipProfile, MemRegion
 from .mt6853 import MT6853
+from .venice import Venice
 
 REGISTRY = {
     "mt6853": MT6853,
+    "venice": Venice,
 }
 
 
@@ -23,4 +25,4 @@ def names():
     return sorted(REGISTRY)
 
 
-__all__ = ["ChipProfile", "MemRegion", "REGISTRY", "get", "names", "MT6853"]
+__all__ = ["ChipProfile", "MemRegion", "REGISTRY", "get", "names", "MT6853", "Venice"]

@@ -96,6 +96,12 @@ class BromMachine:
             self._feed_rx()
             return
 
+        # 芯片专有的动态寄存器（每次读都会变的等待位/邮箱/计数器）
+        rv = self.chip.read_mmio(self, address, size)
+        if rv is not None:
+            mu.mem_write(address, int(rv).to_bytes(4, "little")[:size])
+            return
+
         # 设备寄存器（可能落在普通内存区间里）
         rw = self.chip.ready_window
         if address in self.chip.device_regs or (rw and rw[0] <= address < rw[1]):
@@ -134,6 +140,9 @@ class BromMachine:
         if address < self.chip.rom_base + self.chip.rom_size:
             self.rom_write_attempts.append((address, size, value,
                                             mu.reg_read(UC_ARM_REG_PC)))
+            return
+
+        if self.chip.write_mmio(self, address, size, value):
             return
 
         if address in self.chip.device_regs or address >= 0x10000000:
@@ -186,7 +195,8 @@ class BromMachine:
             pc = self.mu.reg_read(UC_ARM_REG_PC)
             if first:
                 # 第一次调用：从芯片入口开始（与 debugger 的行为一致）
-                pc = c.entry
+                # CPU 初始状态（SP / Thumb / 预填寄存器）交给 profile 的 init_cpu 钩子
+                pc = c.init_cpu(self.mu, c.entry)
                 self.mu.reg_write(UC_ARM_REG_PC, pc)
                 first = False
             cpsr = self.mu.reg_read(UC_ARM_REG_CPSR)

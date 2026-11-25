@@ -52,6 +52,27 @@ class ChipProfile:
     entry: int = 0x28
     init_sp: Optional[int] = None
 
+    def init_cpu(self, mu, entry: int) -> int:
+        """复位后、执行前的一次性 CPU 初始化；返回实际入口地址。
+
+        通用引擎只调用这一个钩子，不认识任何芯片细节。需要设置初始 SP、
+        切换 ARM/Thumb 状态或预填寄存器的芯片覆盖本方法。默认原样返回。
+        """
+        return entry
+
+    def read_mmio(self, machine, address: int, size: int):
+        """芯片专有的 MMIO 读模型。
+
+        返回 int 表示由本芯片提供该值（通用模型不再处理）；
+        返回 None 表示交给默认的 `model.read()`。
+        用于"每次读都会变"的寄存器（等待位、邮箱、计数器）——静态 device_regs 表达不了。
+        """
+        return None
+
+    def write_mmio(self, machine, address: int, size: int, value: int) -> bool:
+        """芯片专有的 MMIO 写模型；返回 True 表示已处理。"""
+        return False
+
     # ---------- 内存布局 ----------
     regions: list = []
 
@@ -62,6 +83,9 @@ class ChipProfile:
     timer_reg: int = 0x10008048
     usb_base: int = 0x11201000
     usb_ep_fifo_off: int = 0x300         # 端点 0 的 FIFO 偏移
+    #: USB bulk 端点的单包上限。BROM 的 RX 缓冲就是这么大；
+    #: 主机传输超过它时必须切包（真机由 USB 控制器切，模拟器在这里切）。
+    usb_max_packet: int = 512
     efuse_base: int = 0x11C10000
 
     # ---------- BROM 内部 SRAM 变量 ----------

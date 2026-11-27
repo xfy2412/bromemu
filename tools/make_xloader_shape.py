@@ -105,19 +105,30 @@ def main() -> int:
 
     img = bytearray(PAYLOAD_OFF + PAYLOAD_SIZE)
 
-    # ---- 容器：三个链式块（BootROM 的 0x3e68 会顺链解析） ----
-    # 块大小公式（0x4484）：type=1 时 size = (0x40 + (word88 & 0xffff)) * 4
+    # ---- 容器：三个链式块（对照原厂：大小 0x2CC / 0x2CC / 0x2E8，总 0x880） ----
+    # word88 = (段数 << 16) | 表偏移；type = (flags >> 17) & 3
+    # 块大小（0x4484）：type=1 → (0x40 + low16) * 4；type=2 → (3*count + 0x40 + low16) * 4
     struct.pack_into("<I", img, 0x08, 1)
     struct.pack_into("<I", img, 0x0C, 1)
     img[NAME_OFF:NAME_OFF + 16] = b"xloader\x00" + b"\x00" * 8
 
-    # 块1 type=1（头部）；块2 type=2（证书表，链到此结束）
-    blocks = ((0x000, FLAGS), (0x2CC, 0x00040102), (0x598, FLAGS))
-    for base, flags in blocks:
+    blocks = (
+        (0x000, COUNT, FLAGS),              # 块1：头部，type=1
+        (0x2CC, COUNT, FLAGS),              # 块2：证书相关，type=1
+        (0x598, 0x00010077, 0x000401FF),    # 块3：段表，type=2，count=1、偏移 0x77
+    )
+    for base, word88, flags in blocks:
         struct.pack_into("<I", img, base + HEADER_OFF + 0x00, MAGIC)
         struct.pack_into("<I", img, base + HEADER_OFF + 0x04, VERSION)
-        struct.pack_into("<I", img, base + HEADER_OFF + 0x08, COUNT)
+        struct.pack_into("<I", img, base + HEADER_OFF + 0x08, word88)
         struct.pack_into("<I", img, base + HEADER_OFF + 0x0C, flags)
+        # 0x1A4 必须 1 或 2（0x4594 会把它的指针交给 0x53A0 校验）
+        struct.pack_into("<I", img, base + 0x1A4, 1)
+        struct.pack_into("<I", img, base + 0x1A8, 2)
+
+    # 块3 的段表项（12 字节/项，取前 8 字节当 addr/len）
+    struct.pack_into("<III", img, 0x598 + HEADER_OFF + 0x77 * 4,
+                     0x22000 + PAYLOAD_OFF, PAYLOAD_SIZE, 0)
 
     # ---- 载荷：自造 ELF ----
     elf = build_elf(PAYLOAD_OFF)
